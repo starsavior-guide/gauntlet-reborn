@@ -10,8 +10,7 @@ permissions:
 
 env:
   GODOT_VERSION: "4.7.2"
-  SOURCE_FILE_ID: "1iDaVwJ2V2tuetRWWr5sDuvEhNOZN5S7X"
-  V7_PYTHON: "/opt/v7venv/bin/python"
+  V7_ZIP_URL: "https://raw.githubusercontent.com/starsavior-guide/gauntlet-reborn/main/honbugi_android_port_v7.zip"
 
 jobs:
   android-debug:
@@ -20,38 +19,28 @@ jobs:
       image: barichello/godot-ci:4.7.2
 
     steps:
-      - name: Checkout
+      - name: Checkout build branch
         uses: actions/checkout@v4
 
-      - name: Install Python toolchain and helpers
+      - name: Install build helpers
         shell: bash
         run: |
           apt-get update -qq
-          apt-get install -y --no-install-recommends python3 python3-pip python3-venv unzip xz-utils ca-certificates
-          python3 -m venv /opt/v7venv
-          /opt/v7venv/bin/pip install --disable-pip-version-check --no-cache-dir pillow gdown
-          "$V7_PYTHON" --version
+          apt-get install -y --no-install-recommends python3 unzip curl ca-certificates
+          python3 --version
 
-      - name: Reconstruct V7 text project
+      - name: Download and unpack uploaded V7 ZIP
         shell: bash
         run: |
-          cat ci/v7_payload.*.b64 | base64 -d > /tmp/v7_text_payload.tar.xz
-          echo "2e84a8606ef015c6c46715ee6b7ea222e95377419dfc768c40451238b1b36a78  /tmp/v7_text_payload.tar.xz" | sha256sum -c -
-          tar -xJf /tmp/v7_text_payload.tar.xz -C "$GITHUB_WORKSPACE"
-
-      - name: Download creator-published original game
-        shell: bash
-        run: |
-          mkdir -p source
-          "$V7_PYTHON" -m gdown "$SOURCE_FILE_ID" -O source/honbugi-original.zip
-          test -s source/honbugi-original.zip
-          unzip -q source/honbugi-original.zip -d source
-          test -f source/hongbuki/Resources/data/project.json
-
-      - name: Rebuild source-backed PNG and OGG assets
-        shell: bash
-        run: |
-          "$V7_PYTHON" ci/rebuild_assets_v7.py "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/source/hongbuki/Resources"
+          rm -rf /tmp/honbugi_v7 /tmp/honbugi_v7.zip
+          mkdir -p /tmp/honbugi_v7
+          curl -L --fail --retry 3 --retry-delay 2 "$V7_ZIP_URL" -o /tmp/honbugi_v7.zip
+          test -s /tmp/honbugi_v7.zip
+          unzip -q /tmp/honbugi_v7.zip -d /tmp/honbugi_v7
+          test -f /tmp/honbugi_v7/honbugi_android_port_v7/project.godot
+          cp -a /tmp/honbugi_v7/honbugi_android_port_v7/. "$GITHUB_WORKSPACE"/
+          test -f "$GITHUB_WORKSPACE/project.godot"
+          test -f "$GITHUB_WORKSPACE/export_presets.cfg"
 
       - name: Install Godot templates and Android editor settings
         shell: bash
@@ -63,11 +52,12 @@ jobs:
       - name: V7 preflight
         shell: bash
         run: |
-          "$V7_PYTHON" tools/preflight_v7.py
+          python3 tools/preflight_v7.py
 
       - name: Import and parse project
         shell: bash
-        run: godot --headless --verbose --path "$GITHUB_WORKSPACE" --editor --quit
+        run: |
+          godot --headless --verbose --path "$GITHUB_WORKSPACE" --editor --quit
 
       - name: Build Android Debug APK
         shell: bash
@@ -76,11 +66,12 @@ jobs:
           set +e
           godot --headless --verbose --path "$GITHUB_WORKSPACE" --export-debug "Android" "$GITHUB_WORKSPACE/build/HonbugiV7.apk" > build/android-export.log 2>&1
           code=$?
+          set -e
           echo "===== Godot Android export exit code: $code ====="
           echo "===== android-export.log tail ====="
-          tail -n 180 build/android-export.log || true
+          tail -n 220 build/android-export.log || true
           echo "===== likely error lines ====="
-          grep -Ein 'error|failed|failure|missing|invalid|keystore|android|sdk|template|gradle|jarsigner|apksigner' build/android-export.log | tail -n 120 || true
+          grep -Ein 'error|failed|failure|missing|invalid|keystore|android|sdk|template|gradle|jarsigner|apksigner' build/android-export.log | tail -n 160 || true
           if [ "$code" -ne 0 ]; then
             exit "$code"
           fi
@@ -96,6 +87,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload APK artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: HonbugiV7-Android-Debug
