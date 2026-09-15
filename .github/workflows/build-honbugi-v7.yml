@@ -62,7 +62,8 @@ jobs:
 
       - name: V7 preflight
         shell: bash
-        run: "$V7_PYTHON" tools/preflight_v7.py
+        run: |
+          "$V7_PYTHON" tools/preflight_v7.py
 
       - name: Import and parse project
         shell: bash
