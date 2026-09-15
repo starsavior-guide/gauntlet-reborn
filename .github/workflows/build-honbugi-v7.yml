@@ -42,6 +42,26 @@ jobs:
           test -f "$GITHUB_WORKSPACE/project.godot"
           test -f "$GITHUB_WORKSPACE/export_presets.cfg"
 
+      - name: Enable Android ETC2 ASTC texture import
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('project.godot')
+          s = p.read_text(encoding='utf-8')
+          key = 'textures/vram_compression/import_etc2_astc=true'
+          if key not in s:
+              marker = '[rendering]\n'
+              if marker not in s:
+                  raise SystemExit('Missing [rendering] section in project.godot')
+              s = s.replace(marker, marker + key + '\n', 1)
+              p.write_text(s, encoding='utf-8')
+          print('Android texture compression setting:')
+          for line in p.read_text(encoding='utf-8').splitlines():
+              if 'vram_compression' in line:
+                  print(line)
+          PY
+
       - name: Install Godot templates and Android editor settings
         shell: bash
         run: |
@@ -71,7 +91,7 @@ jobs:
           echo "===== android-export.log tail ====="
           tail -n 220 build/android-export.log || true
           echo "===== likely error lines ====="
-          grep -Ein 'error|failed|failure|missing|invalid|keystore|android|sdk|template|gradle|jarsigner|apksigner' build/android-export.log | tail -n 160 || true
+          grep -Ein 'error|failed|failure|missing|invalid|keystore|android|sdk|template|gradle|jarsigner|apksigner|etc2|astc' build/android-export.log | tail -n 160 || true
           if [ "$code" -ne 0 ]; then
             exit "$code"
           fi
