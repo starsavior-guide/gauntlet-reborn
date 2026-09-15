@@ -11,6 +11,7 @@ permissions:
 env:
   GODOT_VERSION: "4.7.2"
   SOURCE_FILE_ID: "1iDaVwJ2V2tuetRWWr5sDuvEhNOZN5S7X"
+  V7_PYTHON: "/opt/v7venv/bin/python"
 
 jobs:
   android-debug:
@@ -22,10 +23,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Python helpers
+      - name: Install Python toolchain and helpers
         shell: bash
         run: |
-          python3 -m pip install --disable-pip-version-check --no-cache-dir pillow gdown
+          apt-get update -qq
+          apt-get install -y --no-install-recommends python3 python3-pip python3-venv unzip xz-utils ca-certificates
+          python3 -m venv /opt/v7venv
+          /opt/v7venv/bin/pip install --disable-pip-version-check --no-cache-dir pillow gdown
+          "$V7_PYTHON" --version
 
       - name: Reconstruct V7 text project
         shell: bash
@@ -38,7 +43,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p source
-          python3 -m gdown "$SOURCE_FILE_ID" -O source/honbugi-original.zip
+          "$V7_PYTHON" -m gdown "$SOURCE_FILE_ID" -O source/honbugi-original.zip
           test -s source/honbugi-original.zip
           unzip -q source/honbugi-original.zip -d source
           test -f source/hongbuki/Resources/data/project.json
@@ -46,7 +51,7 @@ jobs:
       - name: Rebuild source-backed PNG and OGG assets
         shell: bash
         run: |
-          python3 ci/rebuild_assets_v7.py "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/source/hongbuki/Resources"
+          "$V7_PYTHON" ci/rebuild_assets_v7.py "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/source/hongbuki/Resources"
 
       - name: Install Godot templates and Android editor settings
         shell: bash
@@ -57,7 +62,7 @@ jobs:
 
       - name: V7 preflight
         shell: bash
-        run: python3 tools/preflight_v7.py
+        run: "$V7_PYTHON" tools/preflight_v7.py
 
       - name: Import and parse project
         shell: bash
