@@ -73,9 +73,27 @@ jobs:
         shell: bash
         run: |
           mkdir -p build
-          godot --headless --verbose --path "$GITHUB_WORKSPACE" --export-debug "Android" "$GITHUB_WORKSPACE/build/HonbugiV7.apk"
+          set +e
+          godot --headless --verbose --path "$GITHUB_WORKSPACE" --export-debug "Android" "$GITHUB_WORKSPACE/build/HonbugiV7.apk" > build/android-export.log 2>&1
+          code=$?
+          echo "===== Godot Android export exit code: $code ====="
+          echo "===== android-export.log tail ====="
+          tail -n 180 build/android-export.log || true
+          echo "===== likely error lines ====="
+          grep -Ein 'error|failed|failure|missing|invalid|keystore|android|sdk|template|gradle|jarsigner|apksigner' build/android-export.log | tail -n 120 || true
+          if [ "$code" -ne 0 ]; then
+            exit "$code"
+          fi
           test -s build/HonbugiV7.apk
           sha256sum build/HonbugiV7.apk | tee build/HonbugiV7.apk.sha256
+
+      - name: Upload export diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HonbugiV7-Export-Diagnostics
+          path: build/android-export.log
+          if-no-files-found: warn
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
