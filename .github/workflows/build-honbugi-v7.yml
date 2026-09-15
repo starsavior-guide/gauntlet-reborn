@@ -26,7 +26,7 @@ jobs:
         shell: bash
         run: |
           apt-get update -qq
-          apt-get install -y --no-install-recommends python3 unzip curl ca-certificates
+          apt-get install -y --no-install-recommends python3 unzip curl ca-certificates coreutils
           python3 --version
 
       - name: Download and unpack uploaded V7 ZIP
@@ -79,6 +79,23 @@ jobs:
         run: |
           godot --headless --verbose --path "$GITHUB_WORKSPACE" --editor --quit
 
+      - name: Runtime smoke test
+        shell: bash
+        run: |
+          mkdir -p build
+          set +e
+          timeout 8s godot --headless --verbose --path "$GITHUB_WORKSPACE" > build/runtime-smoke.log 2>&1
+          code=$?
+          set -e
+          echo "===== runtime smoke exit code: $code ====="
+          tail -n 260 build/runtime-smoke.log || true
+          echo "===== runtime error lines ====="
+          grep -Ein 'SCRIPT ERROR|ERROR:|Invalid|Attempt to call|Nil|Null|Parser Error|Cannot|failed|not found' build/runtime-smoke.log | tail -n 220 || true
+          # timeout(124) is expected because the game loop keeps running.
+          if [ "$code" -ne 0 ] && [ "$code" -ne 124 ]; then
+            echo "Unexpected Godot runtime exit code $code"
+          fi
+
       - name: Build Android Debug APK
         shell: bash
         run: |
@@ -98,12 +115,14 @@ jobs:
           test -s build/HonbugiV7.apk
           sha256sum build/HonbugiV7.apk | tee build/HonbugiV7.apk.sha256
 
-      - name: Upload export diagnostics
+      - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: HonbugiV7-Export-Diagnostics
-          path: build/android-export.log
+          name: HonbugiV7-Diagnostics
+          path: |
+            build/runtime-smoke.log
+            build/android-export.log
           if-no-files-found: warn
 
       - name: Upload APK artifact
