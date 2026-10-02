@@ -1,4 +1,4 @@
-name: Build Honbugi V7 Android Debug APK
+name: Build Honbugi V8 Test Android APK
 
 on:
   workflow_dispatch:
@@ -42,25 +42,19 @@ jobs:
           test -f "$GITHUB_WORKSPACE/project.godot"
           test -f "$GITHUB_WORKSPACE/export_presets.cfg"
 
-      - name: Apply runtime parser fixes
+      - name: Apply V8 gameplay test fixes
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('scripts/game.gd')
-          s = p.read_text(encoding='utf-8')
-          old1 = '    var hurt_anim := {"boss_crab":"crab_hurt","boss_chamber":"chamber_hurt"}.get(kind,"")'
-          new1 = '    var hurt_anim: String = String({"boss_crab":"crab_hurt","boss_chamber":"chamber_hurt"}.get(kind,""))'
-          old2 = '        var dist := e.position.distance_to(player.position); var flying := bool(e.get_meta("flying",false))'
-          new2 = '        var dist: float = float(e.position.distance_to(player.position)); var flying := bool(e.get_meta("flying",false))'
-          if old1 not in s:
-              raise SystemExit('Expected hurt_anim source line not found')
-          if old2 not in s:
-              raise SystemExit('Expected dist source line not found')
-          s = s.replace(old1, new1, 1).replace(old2, new2, 1)
-          p.write_text(s, encoding='utf-8')
-          print('Applied game.gd parser fixes')
-          PY
+          python3 patches/v8_part1.py
+          python3 patches/v8_part2.py
+          python3 patches/v8_part3.py
+          echo "===== V8 patch markers ====="
+          grep -nE 'TEST_MAX_HP|TEST_ATTACK_POWER|PLAYER_FRAME_BOTTOMS|Android Test V8|SAVE 가능' scripts/game.gd
+          if grep -q '"USE"' scripts/game.gd; then
+            echo "Unexpected USE touch button remains"
+            exit 92
+          fi
+          sha256sum scripts/game.gd
 
       - name: Enable Android ETC2 ASTC texture import
         shell: bash
@@ -126,7 +120,7 @@ jobs:
         run: |
           mkdir -p build
           set +e
-          godot --headless --verbose --path "$GITHUB_WORKSPACE" --export-debug "Android" "$GITHUB_WORKSPACE/build/HonbugiV7.apk" > build/android-export.log 2>&1
+          godot --headless --verbose --path "$GITHUB_WORKSPACE" --export-debug "Android" "$GITHUB_WORKSPACE/build/HonbugiV8-Test.apk" > build/android-export.log 2>&1
           code=$?
           set -e
           echo "===== Godot Android export exit code: $code ====="
@@ -137,14 +131,14 @@ jobs:
           if [ "$code" -ne 0 ]; then
             exit "$code"
           fi
-          test -s build/HonbugiV7.apk
-          sha256sum build/HonbugiV7.apk | tee build/HonbugiV7.apk.sha256
+          test -s build/HonbugiV8-Test.apk
+          sha256sum build/HonbugiV8-Test.apk | tee build/HonbugiV8-Test.apk.sha256
 
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: HonbugiV7-Diagnostics
+          name: HonbugiV8-Test-Diagnostics
           path: |
             build/runtime-smoke.log
             build/android-export.log
@@ -154,8 +148,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: HonbugiV7-Android-Debug
+          name: HonbugiV8-Test-Android-Debug
           path: |
-            build/HonbugiV7.apk
-            build/HonbugiV7.apk.sha256
+            build/HonbugiV8-Test.apk
+            build/HonbugiV8-Test.apk.sha256
           if-no-files-found: error
