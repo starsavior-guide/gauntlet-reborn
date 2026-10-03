@@ -1,0 +1,174 @@
+name: Build Honbugi V11 Motion Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ honbugi-v11-build ]
+
+permissions:
+  contents: read
+
+env:
+  GODOT_VERSION: "4.7.2"
+  V7_ZIP_URL: "https://raw.githubusercontent.com/starsavior-guide/gauntlet-reborn/main/honbugi_android_port_v7.zip"
+  V9_BUNDLE_URL: "https://raw.githubusercontent.com/starsavior-guide/gauntlet-reborn/main/player_v9_bundle.zip"
+
+jobs:
+  android-debug:
+    runs-on: ubuntu-24.04
+    container:
+      image: barichello/godot-ci:4.7.2
+
+    steps:
+      - name: Checkout V11 build branch
+        uses: actions/checkout@v4
+
+      - name: Install build helpers
+        shell: bash
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends python3 python3-pil python3-numpy unzip curl ca-certificates coreutils
+          python3 --version
+
+      - name: Download and unpack V7 base
+        shell: bash
+        run: |
+          rm -rf /tmp/honbugi_v7 /tmp/honbugi_v7.zip
+          mkdir -p /tmp/honbugi_v7
+          curl -L --fail --retry 3 --retry-delay 2 "$V7_ZIP_URL" -o /tmp/honbugi_v7.zip
+          unzip -q /tmp/honbugi_v7.zip -d /tmp/honbugi_v7
+          cp -a /tmp/honbugi_v7/honbugi_android_port_v7/. "$GITHUB_WORKSPACE"/
+          test -f scripts/game.gd
+
+      - name: Restore V8 gameplay baseline
+        shell: bash
+        run: |
+          python3 patches/v8_part1.py
+          python3 patches/v8_part2.py
+          python3 patches/v8_part3.py
+
+      - name: Download V9 source frames
+        shell: bash
+        run: |
+          rm -rf /tmp/player_v9_bundle.zip assets/player_v9
+          curl -L --fail --retry 3 --retry-delay 2 "$V9_BUNDLE_URL" -o /tmp/player_v9_bundle.zip
+          unzip -q /tmp/player_v9_bundle.zip 'assets/player_v9/*' -d "$GITHUB_WORKSPACE"
+          test -d assets/player_v9
+
+      - name: Build V10 simple baseline
+        shell: bash
+        run: |
+          python3 tools/make_v10_simple.py
+          python3 patches/v10_simple.py
+          test -f data/player_v10_animations.json
+
+      - name: Build V11 manual-pivot motions
+        shell: bash
+        run: |
+          python3 tools/make_v11_motion.py
+          test -f data/player_v11_animations.json
+          grep -n 'player_v11_animations.json' scripts/game.gd
+          grep -n 'Android Test V11' scripts/game.gd
+          if grep -q '"STR"' scripts/game.gd || grep -q 'strong_attack' scripts/game.gd; then
+            echo 'Skill/STR code unexpectedly present'
+            exit 92
+          fi
+
+      - name: Validate V11 sprite set
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          expected={'idle':1,'walk':6,'jump':1,'dodge':6,'attack1':4,'dash':3,'damage':2,'save_pose':1}
+          total=0
+          for sub,count in expected.items():
+              files=sorted((Path('assets/player_v11')/sub).glob('*.png'))
+              if len(files)!=count:
+                  raise SystemExit(f'{sub}: expected {count}, got {len(files)}')
+              total += len(files)
+              for p in files:
+                  im=Image.open(p).convert('RGBA')
+                  if im.size!=(512,512): raise SystemExit(f'bad canvas {p}: {im.size}')
+                  b=im.getchannel('A').getbbox()
+                  if not b: raise SystemExit(f'empty {p}')
+                  if min(b[0],b[1])<=8 or b[2]>=504 or b[3]>=504:
+                      raise SystemExit(f'edge clip risk {p}: {b}')
+          # Specifically verify the old clipped jump frame is gone.
+          j=Image.open('assets/player_v11/jump/00.png').convert('RGBA').getchannel('A').getbbox()
+          if not j or j[0] >= 220:
+              raise SystemExit(f'jump frame looks clipped: {j}')
+          print('V11 sprite validation OK:', total, 'frames; jump bbox=',j)
+          PY
+
+      - name: Enable Android texture compression
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('project.godot')
+          s=p.read_text(encoding='utf-8')
+          key='textures/vram_compression/import_etc2_astc=true'
+          if key not in s:
+              marker='[rendering]\n'
+              if marker not in s: raise SystemExit('Missing [rendering] section')
+              s=s.replace(marker,marker+key+'\n',1)
+              p.write_text(s,encoding='utf-8')
+          PY
+
+      - name: Install Godot templates
+        shell: bash
+        run: |
+          mkdir -p ~/.local/share/godot/export_templates ~/.config/godot
+          cp -a /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/
+          cp -a /root/.config/godot/. ~/.config/godot/
+
+      - name: Static preflight
+        shell: bash
+        run: python3 tools/preflight_v7.py
+
+      - name: Import and parse project
+        shell: bash
+        run: godot --headless --verbose --path "$GITHUB_WORKSPACE" --editor --quit
+
+      - name: Runtime smoke test
+        shell: bash
+        run: |
+          mkdir -p build
+          set +e
+          timeout 10s godot --headless --verbose --path "$GITHUB_WORKSPACE" > build/runtime-smoke.log 2>&1
+          code=$?
+          set -e
+          tail -n 320 build/runtime-smoke.log || true
+          if grep -Eiq 'SCRIPT ERROR|Parse Error|Failed to load script|Invalid call|Invalid get index|Attempt to call' build/runtime-smoke.log; then
+            exit 91
+          fi
+          if [ "$code" -ne 0 ] && [ "$code" -ne 124 ]; then exit "$code"; fi
+
+      - name: Build Android Debug APK
+        shell: bash
+        run: |
+          mkdir -p build
+          godot --headless --verbose --path "$GITHUB_WORKSPACE" --export-debug "Android" "$GITHUB_WORKSPACE/build/HonbugiV11-Motion.apk" > build/android-export.log 2>&1
+          test -s build/HonbugiV11-Motion.apk
+          sha256sum build/HonbugiV11-Motion.apk | tee build/HonbugiV11-Motion.apk.sha256
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HonbugiV11-Diagnostics
+          path: |
+            build/runtime-smoke.log
+            build/android-export.log
+          if-no-files-found: warn
+
+      - name: Upload APK artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HonbugiV11-Motion-Android
+          path: |
+            build/HonbugiV11-Motion.apk
+            build/HonbugiV11-Motion.apk.sha256
+          if-no-files-found: error
