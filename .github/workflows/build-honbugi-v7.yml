@@ -1,9 +1,9 @@
-name: Build Honbugi V10 Simple Android APK
+name: Build Honbugi V11 Manual Pivot Android APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [ honbugi-v10-build ]
+    branches: [ honbugi-v11-build ]
 
 permissions:
   contents: read
@@ -20,7 +20,7 @@ jobs:
       image: barichello/godot-ci:4.7.2
 
     steps:
-      - name: Checkout V10 build branch
+      - name: Checkout V11 build branch
         uses: actions/checkout@v4
 
       - name: Install build helpers
@@ -62,42 +62,55 @@ jobs:
           test -d assets/player_v9
           echo "source V9 frames: $(find assets/player_v9 -type f -name '*.webp' | wc -l)"
 
-      - name: Build small V10 character frames
+      - name: Restore V10 simplified controls
         shell: bash
         run: |
           python3 tools/make_v10_simple.py
           python3 patches/v10_simple.py
-          echo "V10 png count: $(find assets/player_v10 -type f -name '*.png' | wc -l)"
-          grep -n 'player_v10_animations.json' scripts/game.gd
           grep -n 'Android Test V10' scripts/game.gd
           if grep -q '"STR"' scripts/game.gd || grep -q 'strong_attack' scripts/game.gd; then
-            echo 'Skill/STR code still present'
+            echo 'Skill/STR code still present after V10 simplification'
             exit 92
           fi
 
-      - name: Validate V10 sprite bounds
+      - name: Build V11 manual-pivot character frames
+        shell: bash
+        run: |
+          python3 tools/make_v11_manual.py
+          python3 patches/v11_manual.py
+          echo "V11 png count: $(find assets/player_v11 -type f -name '*.png' | wc -l)"
+          grep -n 'player_v11_animations.json' scripts/game.gd
+          grep -n 'Android Test V11' scripts/game.gd
+          grep -n 'player.z_index = 20' scripts/game.gd
+          if grep -q '"STR"' scripts/game.gd || grep -q 'strong_attack' scripts/game.gd; then
+            echo 'Skill/STR code unexpectedly present in V11'
+            exit 93
+          fi
+
+      - name: Validate V11 sprite canvases and pivots
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
           from PIL import Image
-          files=sorted(Path('assets/player_v10').glob('*/*.png'))
-          if len(files) != 26:
-              raise SystemExit(f'Expected 26 simple V10 PNG frames, got {len(files)}')
+          files = sorted(Path('assets/player_v11').glob('*/*.png'))
+          if len(files) != 24:
+              raise SystemExit(f'Expected 24 V11 PNG frames, got {len(files)}')
           for p in files:
-              im=Image.open(p).convert('RGBA')
+              im = Image.open(p).convert('RGBA')
               if im.size != (512,512):
                   raise SystemExit(f'Bad canvas {p}: {im.size}')
-              b=im.getchannel('A').getbbox()
+              b = im.getchannel('A').getbbox()
               if not b:
                   raise SystemExit(f'Empty frame {p}')
-              if b[3]-1 != 400:
-                  raise SystemExit(f'Foot baseline mismatch {p}: {b}')
-              if b[0] <= 8 or b[2] >= 504 or b[1] <= 8:
+              if b[0] <= 8 or b[2] >= 504 or b[1] <= 8 or b[3] >= 504:
                   raise SystemExit(f'Frame too close to canvas edge {p}: {b}')
-              if b[3]-b[1] > 112:
+              # Every authored V11 frame is intentionally pinned to ground Y=400.
+              if b[3] - 1 != 400:
+                  raise SystemExit(f'Ground baseline mismatch {p}: {b}')
+              if b[3] - b[1] > 190:
                   raise SystemExit(f'Frame too tall {p}: {b}')
-          print('V10 sprite bounds OK:', len(files))
+          print('V11 sprite canvas/pivot validation OK:', len(files))
           PY
 
       - name: Enable Android ETC2 ASTC texture import
@@ -105,15 +118,15 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p=Path('project.godot')
-          s=p.read_text(encoding='utf-8')
-          key='textures/vram_compression/import_etc2_astc=true'
+          p = Path('project.godot')
+          s = p.read_text(encoding='utf-8')
+          key = 'textures/vram_compression/import_etc2_astc=true'
           if key not in s:
-              marker='[rendering]\n'
+              marker = '[rendering]\n'
               if marker not in s:
                   raise SystemExit('Missing [rendering] section')
-              s=s.replace(marker,marker+key+'\n',1)
-              p.write_text(s,encoding='utf-8')
+              s = s.replace(marker, marker + key + '\n', 1)
+              p.write_text(s, encoding='utf-8')
           print(key)
           PY
 
@@ -158,7 +171,7 @@ jobs:
         run: |
           mkdir -p build
           set +e
-          godot --headless --verbose --path "$GITHUB_WORKSPACE" --export-debug "Android" "$GITHUB_WORKSPACE/build/HonbugiV10-Simple.apk" > build/android-export.log 2>&1
+          godot --headless --verbose --path "$GITHUB_WORKSPACE" --export-debug "Android" "$GITHUB_WORKSPACE/build/HonbugiV11-Manual.apk" > build/android-export.log 2>&1
           code=$?
           set -e
           echo "===== Godot Android export exit code: $code ====="
@@ -167,14 +180,14 @@ jobs:
           if [ "$code" -ne 0 ]; then
             exit "$code"
           fi
-          test -s build/HonbugiV10-Simple.apk
-          sha256sum build/HonbugiV10-Simple.apk | tee build/HonbugiV10-Simple.apk.sha256
+          test -s build/HonbugiV11-Manual.apk
+          sha256sum build/HonbugiV11-Manual.apk | tee build/HonbugiV11-Manual.apk.sha256
 
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: HonbugiV10-Diagnostics
+          name: HonbugiV11-Diagnostics
           path: |
             build/runtime-smoke.log
             build/android-export.log
@@ -184,8 +197,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: HonbugiV10-Simple-Android
+          name: HonbugiV11-Manual-Android
           path: |
-            build/HonbugiV10-Simple.apk
-            build/HonbugiV10-Simple.apk.sha256
+            build/HonbugiV11-Manual.apk
+            build/HonbugiV11-Manual.apk.sha256
           if-no-files-found: error
