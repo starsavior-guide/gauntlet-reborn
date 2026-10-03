@@ -99,7 +99,8 @@ dash = save_anim('dash', [
     place(SRC/'walk/05.webp', 420),
 ])
 
-# Dodge/roll: rotate one clean character cutout. Each frame is pinned to the same ground baseline.
+# Dodge/roll: rotate one clean character cutout. After rotation, snap the actual
+# alpha bounds (not the padded rotated canvas) back to the same ground baseline.
 base = largest_component(Image.open(SRC/'jump/00.webp'))
 bbox = base.getchannel('A').getbbox()
 base = base.crop(bbox)
@@ -111,7 +112,7 @@ for angle in (0, -60, -120, -180, -240, -300):
     r = base.rotate(angle, resample=Image.Resampling.BICUBIC, expand=True)
     canvas = Image.new('RGBA', (512,512), (0,0,0,0))
     canvas.alpha_composite(r, (CENTER_X-r.width//2, FOOT_Y-r.height+1))
-    roll_frames.append(canvas)
+    roll_frames.append(snap_bottom(canvas))
 dodge = save_anim('dodge', roll_frames)
 
 # Attack: simple character-only lunge/crouch/return sequence. No slash arc, particles or skill frames.
