@@ -1,143 +1,105 @@
 from pathlib import Path
 from PIL import Image
-from collections import deque
 import json, shutil
 
 ROOT = Path('.')
-SRC = ROOT / 'assets/player_v9'
+SRC = ROOT / 'assets/player_v10'
 OUT = ROOT / 'assets/player_v11'
 DATA = ROOT / 'data/player_v11_animations.json'
-SCALE = 0.46
-CENTER_X = 256
+CANVAS = (512, 512)
+BODY_X = 256
 FOOT_Y = 400
 
 if OUT.exists():
     shutil.rmtree(OUT)
 OUT.mkdir(parents=True)
 
-def largest_component(im: Image.Image) -> Image.Image:
-    im = im.convert('RGBA')
-    alpha = im.getchannel('A')
-    w, h = im.size
-    data = list(alpha.getdata())
-    seen = bytearray(w * h)
-    largest = []
-    for idx, value in enumerate(data):
-        if value <= 16 or seen[idx]:
-            continue
-        q = deque([idx])
-        seen[idx] = 1
-        comp = []
-        while q:
-            cur = q.popleft()
-            comp.append(cur)
-            x = cur % w
-            y = cur // w
-            for nx, ny in ((x-1,y),(x+1,y),(x,y-1),(x,y+1)):
-                if 0 <= nx < w and 0 <= ny < h:
-                    ni = ny*w + nx
-                    if not seen[ni] and data[ni] > 16:
-                        seen[ni] = 1
-                        q.append(ni)
-        if len(comp) > len(largest):
-            largest = comp
-    keep = bytearray(w*h)
-    for i in largest:
-        keep[i] = data[i]
-    out = im.copy()
-    out.putalpha(Image.frombytes('L', (w,h), bytes(keep)))
-    return out
+def bbox(im: Image.Image):
+    return im.getchannel('A').getbbox()
 
-def snap_bottom(canvas: Image.Image, foot: int = FOOT_Y) -> Image.Image:
-    bbox = canvas.getchannel('A').getbbox()
-    if not bbox:
-        return canvas
-    shift = foot - (bbox[3] - 1)
-    if shift == 0:
-        return canvas
-    out = Image.new('RGBA', (512,512), (0,0,0,0))
-    out.alpha_composite(canvas, (0, shift))
-    return out
+def body_x(im: Image.Image) -> int:
+    a = im.getchannel('A')
+    px = a.load()
+    xs = []
+    for y in range(292, 366):
+        for x in range(80, 440):
+            if px[x, y] > 80:
+                xs.append(x)
+    if not xs:
+        b = bbox(im)
+        return (b[0] + b[2]) // 2
+    xs.sort()
+    return xs[len(xs)//2]
 
-def place(src: Path, pivot_y: float, dx: float = 0, scale: float = SCALE) -> Image.Image:
-    im = largest_component(Image.open(src))
-    im = im.resize((round(512*scale), round(512*scale)), Image.Resampling.LANCZOS)
-    canvas = Image.new('RGBA', (512,512), (0,0,0,0))
-    x = round(CENTER_X + dx - 256*scale)
-    y = round(FOOT_Y - pivot_y*scale)
-    canvas.alpha_composite(im, (x,y))
-    return snap_bottom(canvas)
+def normalize(src: Path, scale: float = 1.0, angle: float = 0.0, dx: int = 0, dy: int = 0) -> Image.Image:
+    im = Image.open(src).convert('RGBA')
+    b = bbox(im)
+    if not b:
+        raise SystemExit(f'Empty source frame: {src}')
+    bx = body_x(im)
+    bottom = b[3] - 1
+    tmp = Image.new('RGBA', CANVAS, (0,0,0,0))
+    tmp.alpha_composite(im, (BODY_X - bx, FOOT_Y - bottom))
+    if abs(scale - 1.0) > 1e-4:
+        w = max(1, round(512 * scale)); h = max(1, round(512 * scale))
+        rs = tmp.resize((w, h), Image.Resampling.LANCZOS)
+        out = Image.new('RGBA', CANVAS, (0,0,0,0))
+        ox = round(BODY_X - BODY_X * scale)
+        oy = round(FOOT_Y - FOOT_Y * scale)
+        out.alpha_composite(rs, (ox, oy)); tmp = out
+    if abs(angle) > 1e-4:
+        tmp = tmp.rotate(angle, resample=Image.Resampling.BICUBIC, center=(BODY_X, FOOT_Y - 54), expand=False)
+    if dx or dy:
+        out = Image.new('RGBA', CANVAS, (0,0,0,0))
+        out.alpha_composite(tmp, (dx, dy)); tmp = out
+    b = bbox(tmp)
+    if b:
+        shift_y = FOOT_Y - (b[3] - 1)
+        if shift_y:
+            out = Image.new('RGBA', CANVAS, (0,0,0,0))
+            out.alpha_composite(tmp, (0, shift_y)); tmp = out
+    return tmp
 
-def save_anim(name: str, images):
+def save_motion(name: str, images):
     d = OUT / name
     d.mkdir(parents=True, exist_ok=True)
     files = []
     for i, im in enumerate(images):
         p = d / f'{i:02d}.png'
         im.save(p, optimize=True)
-        files.append(str(p.relative_to(ROOT)).replace('\\','/'))
+        files.append(str(p).replace('\\', '/'))
     return files
 
-# Stable single-frame idle: generated idle variants drift horizontally, so do not cycle them.
-idle_img = place(SRC/'idle/00.webp', 417)
-idle = save_anim('idle', [idle_img])
+base = SRC / 'idle/00.png'
+idle = save_motion('idle', [normalize(base)])
+walk = save_motion('walk', [normalize(base, angle=a, dy=dy) for a,dy in [(-1,0),(0,-2),(1,-3),(0,-2),(-1,0),(0,1)]])
+jump = save_motion('jump', [normalize(base, angle=-3, dy=-2)])
+dash = save_motion('dash', [normalize(base, angle=-6, dx=2), normalize(base, angle=-9, dx=5), normalize(base, angle=-6, dx=2)])
+dodge = save_motion('dodge', [normalize(base, scale=0.92, angle=a, dy=5) for a in (0,60,120,180,240,300)])
+damage = save_motion('damage', [normalize(SRC/'damage/00.png'), normalize(SRC/'damage/01.png')])
+# Use only complete effect-free V10 poses; attack1/01 is intentionally skipped.
+attack = save_motion('attack1', [normalize(base), normalize(SRC/'attack1/03.png'), normalize(SRC/'attack1/02.png'), normalize(SRC/'attack1/00.png'), normalize(base)])
+save_pose = save_motion('save_pose', [normalize(base)])
 
-# Walk: preserve the original shared 512 coordinate system instead of recentering each frame independently.
-walk = save_anim('walk', [place(p, 420) for p in sorted((SRC/'walk').glob('*.webp'))])
-
-# Jump: one clean pose. largest_component removes detached image fragments near the canvas edge.
-jump_img = place(SRC/'jump/00.webp', 418)
-jump = save_anim('jump', [jump_img])
-
-# Damage: compact clean pose with no skill/effect animation.
-damage = save_anim('damage', [place(SRC/'damage/01.webp', 420)])
-
-# Dash: three forward-leaning walk poses, no added visual effects.
-dash = save_anim('dash', [
-    place(SRC/'walk/03.webp', 420),
-    place(SRC/'walk/04.webp', 420, dx=4),
-    place(SRC/'walk/05.webp', 420),
-])
-
-# Dodge/roll: rotate one clean character cutout. After rotation, snap the actual
-# alpha bounds (not the padded rotated canvas) back to the same ground baseline.
-base = largest_component(Image.open(SRC/'jump/00.webp'))
-bbox = base.getchannel('A').getbbox()
-base = base.crop(bbox)
-roll_h = 96
-roll_w = max(1, round(base.width * roll_h / base.height))
-base = base.resize((roll_w, roll_h), Image.Resampling.LANCZOS)
-roll_frames = []
-for angle in (0, -60, -120, -180, -240, -300):
-    r = base.rotate(angle, resample=Image.Resampling.BICUBIC, expand=True)
-    canvas = Image.new('RGBA', (512,512), (0,0,0,0))
-    canvas.alpha_composite(r, (CENTER_X-r.width//2, FOOT_Y-r.height+1))
-    roll_frames.append(snap_bottom(canvas))
-dodge = save_anim('dodge', roll_frames)
-
-# Attack: simple character-only lunge/crouch/return sequence. No slash arc, particles or skill frames.
-attack = save_anim('attack1', [
-    place(SRC/'idle/00.webp', 417),
-    place(SRC/'walk/05.webp', 420, dx=4),
-    place(SRC/'attack3/00.webp', 427, dx=8),
-    place(SRC/'walk/00.webp', 420, dx=4),
-    place(SRC/'idle/00.webp', 417),
-])
-
-save_pose = save_anim('save_pose', [idle_img.copy()])
-
-def anim(files, duration300, loop=False):
-    return {'loop': loop, 'frames': [{'file': f, 'duration300': duration300} for f in files]}
-
-root = {
-    'idle': anim(idle, 90, True),
-    'walk': anim(walk, 18, True),
-    'jump': anim(jump, 300, False),
-    'damage': anim(damage, 60, False),
-    'attack1': anim(attack, 16, False),
-    'dash': anim(dash, 18, True),
-    'dodge': anim(dodge, 16, False),
-    'save_pose': anim(save_pose, 60, False),
+settings = {
+    'idle': (True, 45), 'walk': (True, 18), 'jump': (False, 60),
+    'dash': (True, 18), 'dodge': (False, 16), 'damage': (False, 30),
+    'attack1': (False, 18), 'save_pose': (False, 30),
 }
+files_by_motion = {'idle':idle,'walk':walk,'jump':jump,'dash':dash,'dodge':dodge,'damage':damage,'attack1':attack,'save_pose':save_pose}
+root = {}
+for name, files in files_by_motion.items():
+    loop, dur = settings[name]
+    root[name] = {'loop': loop, 'frames': [{'file': f, 'duration300': dur} for f in files]}
 DATA.write_text(json.dumps(root, ensure_ascii=False, indent=2), encoding='utf-8')
-print('V11 manual-pivot frames created:', sum(len(v['frames']) for v in root.values()))
+
+for p in sorted(OUT.glob('*/*.png')):
+    im = Image.open(p).convert('RGBA')
+    b = bbox(im)
+    if not b:
+        raise SystemExit(f'Empty V11 frame {p}')
+    if b[0] <= 2 or b[1] <= 2 or b[2] >= 510 or b[3] >= 510:
+        raise SystemExit(f'V11 frame touches edge {p}: {b}')
+    if b[3] - 1 != FOOT_Y:
+        raise SystemExit(f'V11 baseline mismatch {p}: {b}')
+print('V11 stable frames created:', sum(len(v) for v in files_by_motion.values()))
