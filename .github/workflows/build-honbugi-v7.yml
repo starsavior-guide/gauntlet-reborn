@@ -1,4 +1,4 @@
-name: Build Honbugi V8 Test Android APK
+name: Build Honbugi V9 Character Test APK
 
 on:
   workflow_dispatch:
@@ -11,6 +11,7 @@ permissions:
 env:
   GODOT_VERSION: "4.7.2"
   V7_ZIP_URL: "https://raw.githubusercontent.com/starsavior-guide/gauntlet-reborn/main/honbugi_android_port_v7.zip"
+  V9_BUNDLE_URL: "https://raw.githubusercontent.com/starsavior-guide/gauntlet-reborn/main/player_v9_bundle.zip"
 
 jobs:
   android-debug:
@@ -29,7 +30,7 @@ jobs:
           apt-get install -y --no-install-recommends python3 unzip curl ca-certificates coreutils
           python3 --version
 
-      - name: Download and unpack uploaded V7 ZIP
+      - name: Download and unpack V7 base
         shell: bash
         run: |
           rm -rf /tmp/honbugi_v7 /tmp/honbugi_v7.zip
@@ -42,19 +43,24 @@ jobs:
           test -f "$GITHUB_WORKSPACE/project.godot"
           test -f "$GITHUB_WORKSPACE/export_presets.cfg"
 
-      - name: Apply V8 gameplay test fixes
+      - name: Download and apply V9 character bundle
         shell: bash
         run: |
-          python3 patches/v8_part1.py
-          python3 patches/v8_part2.py
-          python3 patches/v8_part3.py
-          echo "===== V8 patch markers ====="
-          grep -nE 'TEST_MAX_HP|TEST_ATTACK_POWER|PLAYER_FRAME_BOTTOMS|Android Test V8|SAVE 가능' scripts/game.gd
-          if grep -q '"USE"' scripts/game.gd; then
-            echo "Unexpected USE touch button remains"
-            exit 92
-          fi
-          sha256sum scripts/game.gd
+          rm -rf /tmp/player_v9_bundle /tmp/player_v9_bundle.zip
+          mkdir -p /tmp/player_v9_bundle
+          curl -L --fail --retry 3 --retry-delay 2 "$V9_BUNDLE_URL" -o /tmp/player_v9_bundle.zip
+          test -s /tmp/player_v9_bundle.zip
+          unzip -q /tmp/player_v9_bundle.zip -d /tmp/player_v9_bundle
+          test -f /tmp/player_v9_bundle/scripts/game.gd
+          test -f /tmp/player_v9_bundle/data/player_v9_animations.json
+          test -d /tmp/player_v9_bundle/assets/player_v9
+          cp -a /tmp/player_v9_bundle/. "$GITHUB_WORKSPACE"/
+          echo "V9 WebP frame count: $(find assets/player_v9 -type f -name '*.webp' | wc -l)"
+          test "$(find assets/player_v9 -type f -name '*.webp' | wc -l)" -ge 60
+          grep -n 'Android Test V9' scripts/game.gd
+          grep -n 'player_v9_animations.json' scripts/game.gd
+          grep -n 'SKILL' scripts/game.gd
+          sha256sum scripts/game.gd data/player_v9_animations.json
 
       - name: Enable Android ETC2 ASTC texture import
         shell: bash
@@ -70,7 +76,6 @@ jobs:
                   raise SystemExit('Missing [rendering] section in project.godot')
               s = s.replace(marker, marker + key + '\n', 1)
               p.write_text(s, encoding='utf-8')
-          print('Android texture compression setting:')
           for line in p.read_text(encoding='utf-8').splitlines():
               if 'vram_compression' in line:
                   print(line)
@@ -83,7 +88,7 @@ jobs:
           cp -a /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/
           cp -a /root/.config/godot/. ~/.config/godot/
 
-      - name: V7 preflight
+      - name: Static preflight
         shell: bash
         run: |
           python3 tools/preflight_v7.py
@@ -98,18 +103,17 @@ jobs:
         run: |
           mkdir -p build
           set +e
-          timeout 8s godot --headless --verbose --path "$GITHUB_WORKSPACE" > build/runtime-smoke.log 2>&1
+          timeout 10s godot --headless --verbose --path "$GITHUB_WORKSPACE" > build/runtime-smoke.log 2>&1
           code=$?
           set -e
           echo "===== runtime smoke exit code: $code ====="
-          tail -n 300 build/runtime-smoke.log || true
+          tail -n 320 build/runtime-smoke.log || true
           echo "===== runtime error lines ====="
-          grep -Ein 'SCRIPT ERROR|ERROR:|Invalid|Attempt to call|Nil|Null|Parser Error|Cannot|failed|not found' build/runtime-smoke.log | tail -n 240 || true
+          grep -Ein 'SCRIPT ERROR|ERROR:|Invalid|Attempt to call|Nil|Null|Parser Error|Cannot|failed|not found' build/runtime-smoke.log | tail -n 260 || true
           if grep -Eiq 'SCRIPT ERROR|Parse Error|Failed to load script|Invalid call|Invalid get index|Attempt to call' build/runtime-smoke.log; then
             echo 'Fatal runtime/script error detected by smoke test.'
             exit 91
           fi
-          # timeout(124) is expected because the game loop keeps running.
           if [ "$code" -ne 0 ] && [ "$code" -ne 124 ]; then
             echo "Unexpected Godot runtime exit code $code"
             exit "$code"
@@ -120,25 +124,24 @@ jobs:
         run: |
           mkdir -p build
           set +e
-          godot --headless --verbose --path "$GITHUB_WORKSPACE" --export-debug "Android" "$GITHUB_WORKSPACE/build/HonbugiV8-Test.apk" > build/android-export.log 2>&1
+          godot --headless --verbose --path "$GITHUB_WORKSPACE" --export-debug "Android" "$GITHUB_WORKSPACE/build/HonbugiV9-Character-Test.apk" > build/android-export.log 2>&1
           code=$?
           set -e
           echo "===== Godot Android export exit code: $code ====="
-          echo "===== android-export.log tail ====="
-          tail -n 220 build/android-export.log || true
+          tail -n 240 build/android-export.log || true
           echo "===== likely error lines ====="
-          grep -Ein 'error|failed|failure|missing|invalid|keystore|android|sdk|template|gradle|jarsigner|apksigner|etc2|astc' build/android-export.log | tail -n 160 || true
+          grep -Ein 'error|failed|failure|missing|invalid|keystore|android|sdk|template|gradle|jarsigner|apksigner|etc2|astc' build/android-export.log | tail -n 180 || true
           if [ "$code" -ne 0 ]; then
             exit "$code"
           fi
-          test -s build/HonbugiV8-Test.apk
-          sha256sum build/HonbugiV8-Test.apk | tee build/HonbugiV8-Test.apk.sha256
+          test -s build/HonbugiV9-Character-Test.apk
+          sha256sum build/HonbugiV9-Character-Test.apk | tee build/HonbugiV9-Character-Test.apk.sha256
 
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: HonbugiV8-Test-Diagnostics
+          name: HonbugiV9-Diagnostics
           path: |
             build/runtime-smoke.log
             build/android-export.log
@@ -148,8 +151,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: HonbugiV8-Test-Android-Debug
+          name: HonbugiV9-Character-Test-Android
           path: |
-            build/HonbugiV8-Test.apk
-            build/HonbugiV8-Test.apk.sha256
+            build/HonbugiV9-Character-Test.apk
+            build/HonbugiV9-Character-Test.apk.sha256
           if-no-files-found: error
