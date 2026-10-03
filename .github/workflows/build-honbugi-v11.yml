@@ -1,9 +1,9 @@
-name: Build Honbugi V11 Motion Android APK
+name: Build Honbugi V12 Collision Fix Android APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [ honbugi-v11-build ]
+    branches: [ honbugi-v12-build ]
 
 permissions:
   contents: read
@@ -20,7 +20,7 @@ jobs:
       image: barichello/godot-ci:4.7.2
 
     steps:
-      - name: Checkout V11 build branch
+      - name: Checkout V12 build branch
         uses: actions/checkout@v4
 
       - name: Install build helpers
@@ -74,6 +74,51 @@ jobs:
             exit 92
           fi
 
+      - name: Apply V12 global one-way platform fix
+        shell: bash
+        run: |
+          python3 patches/v12_oneway_platforms.py
+          grep -n 'one_way_collision = true' scripts/game.gd
+          grep -n 'safe_margin = 0.02' scripts/game.gd
+          mkdir -p build
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, collections
+          root=Path('.')
+          manifest=json.loads((root/'data/stage_manifest_v5.json').read_text(encoding='utf-8'))
+          masks=collections.Counter()
+          danger=collections.Counter()
+          for key,e in manifest.items():
+              p=root/e['meta']
+              if not p.exists():
+                  continue
+              d=json.loads(p.read_text(encoding='utf-8'))
+              cells={(int(c['x']),int(c['y'])):int(c['mask']) for c in d['collision']}
+              for (x,y),m in cells.items():
+                  if m != 15:
+                      masks[m]+=1
+                  if m == 1:
+                      for dy in range(1,5):
+                          mm=cells.get((x,y+dy),0)
+                          if mm == 15 or (mm & 1):
+                              danger[key]+=1
+                              break
+          report={
+              'scenes_scanned':len(manifest),
+              'partial_mask_counts':{str(k):v for k,v in sorted(masks.items())},
+              'top_only_platform_cells':masks[1],
+              'potential_old_ceiling_traps_within_128px':sum(danger.values()),
+              'affected_scenes':{k:v for k,v in sorted(danger.items()) if v},
+              'fix':'mask=1 uses Godot one_way_collision; full mask=15 remains solid'
+          }
+          Path('build/v12_collision_audit.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps(report,ensure_ascii=False,indent=2))
+          if masks[1] < 1000:
+              raise SystemExit('unexpectedly low top-only platform count')
+          if sum(v for k,v in masks.items() if k != 1) > 20:
+              raise SystemExit('unexpected partial wall distribution')
+          PY
+
       - name: Validate V11 sprite set
         shell: bash
         run: |
@@ -94,7 +139,6 @@ jobs:
                   if not b: raise SystemExit(f'empty {p}')
                   if min(b[0],b[1])<=8 or b[2]>=504 or b[3]>=504:
                       raise SystemExit(f'edge clip risk {p}: {b}')
-          # Specifically verify the old clipped jump frame is gone.
           j=Image.open('assets/player_v11/jump/00.png').convert('RGBA').getchannel('A').getbbox()
           if not j or j[0] >= 220:
               raise SystemExit(f'jump frame looks clipped: {j}')
@@ -149,26 +193,27 @@ jobs:
         shell: bash
         run: |
           mkdir -p build
-          godot --headless --verbose --path "$GITHUB_WORKSPACE" --export-debug "Android" "$GITHUB_WORKSPACE/build/HonbugiV11-Motion.apk" > build/android-export.log 2>&1
-          test -s build/HonbugiV11-Motion.apk
-          sha256sum build/HonbugiV11-Motion.apk | tee build/HonbugiV11-Motion.apk.sha256
+          godot --headless --verbose --path "$GITHUB_WORKSPACE" --export-debug "Android" "$GITHUB_WORKSPACE/build/HonbugiV12-Collision.apk" > build/android-export.log 2>&1
+          test -s build/HonbugiV12-Collision.apk
+          sha256sum build/HonbugiV12-Collision.apk | tee build/HonbugiV12-Collision.apk.sha256
 
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: HonbugiV11-Diagnostics
+          name: HonbugiV12-Diagnostics
           path: |
             build/runtime-smoke.log
             build/android-export.log
+            build/v12_collision_audit.json
           if-no-files-found: warn
 
       - name: Upload APK artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: HonbugiV11-Motion-Android
+          name: HonbugiV12-Collision-Android
           path: |
-            build/HonbugiV11-Motion.apk
-            build/HonbugiV11-Motion.apk.sha256
+            build/HonbugiV12-Collision.apk
+            build/HonbugiV12-Collision.apk.sha256
           if-no-files-found: error
