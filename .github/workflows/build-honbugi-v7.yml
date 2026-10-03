@@ -1,9 +1,9 @@
-name: Build Honbugi V9 Character Test APK
+name: Build Honbugi V10 Simple Android APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [ honbugi-v7-build ]
+    branches: [ honbugi-v10-build ]
 
 permissions:
   contents: read
@@ -20,14 +20,14 @@ jobs:
       image: barichello/godot-ci:4.7.2
 
     steps:
-      - name: Checkout build branch
+      - name: Checkout V10 build branch
         uses: actions/checkout@v4
 
       - name: Install build helpers
         shell: bash
         run: |
           apt-get update -qq
-          apt-get install -y --no-install-recommends python3 unzip curl ca-certificates coreutils
+          apt-get install -y --no-install-recommends python3 python3-pil unzip curl ca-certificates coreutils
           python3 --version
 
       - name: Download and unpack V7 base
@@ -40,45 +40,81 @@ jobs:
           unzip -q /tmp/honbugi_v7.zip -d /tmp/honbugi_v7
           test -f /tmp/honbugi_v7/honbugi_android_port_v7/project.godot
           cp -a /tmp/honbugi_v7/honbugi_android_port_v7/. "$GITHUB_WORKSPACE"/
-          test -f "$GITHUB_WORKSPACE/project.godot"
-          test -f "$GITHUB_WORKSPACE/export_presets.cfg"
+          test -f project.godot
+          test -f scripts/game.gd
 
-      - name: Download and apply V9 character bundle
+      - name: Restore V8 gameplay baseline
         shell: bash
         run: |
-          rm -rf /tmp/player_v9_bundle /tmp/player_v9_bundle.zip
-          mkdir -p /tmp/player_v9_bundle
+          python3 patches/v8_part1.py
+          python3 patches/v8_part2.py
+          python3 patches/v8_part3.py
+          grep -n 'Android Test V8' scripts/game.gd
+          grep -n 'TEST_MAX_HP' scripts/game.gd
+
+      - name: Download V9 character source frames only
+        shell: bash
+        run: |
+          rm -rf /tmp/player_v9_bundle.zip assets/player_v9
           curl -L --fail --retry 3 --retry-delay 2 "$V9_BUNDLE_URL" -o /tmp/player_v9_bundle.zip
           test -s /tmp/player_v9_bundle.zip
-          unzip -q /tmp/player_v9_bundle.zip -d /tmp/player_v9_bundle
-          test -f /tmp/player_v9_bundle/scripts/game.gd
-          test -f /tmp/player_v9_bundle/data/player_v9_animations.json
-          test -d /tmp/player_v9_bundle/assets/player_v9
-          cp -a /tmp/player_v9_bundle/. "$GITHUB_WORKSPACE"/
-          echo "V9 WebP frame count: $(find assets/player_v9 -type f -name '*.webp' | wc -l)"
-          test "$(find assets/player_v9 -type f -name '*.webp' | wc -l)" -ge 60
-          grep -n 'Android Test V9' scripts/game.gd
-          grep -n 'player_v9_animations.json' scripts/game.gd
-          grep -n 'SKILL' scripts/game.gd
-          sha256sum scripts/game.gd data/player_v9_animations.json
+          unzip -q /tmp/player_v9_bundle.zip 'assets/player_v9/*' -d "$GITHUB_WORKSPACE"
+          test -d assets/player_v9
+          echo "source V9 frames: $(find assets/player_v9 -type f -name '*.webp' | wc -l)"
+
+      - name: Build small V10 character frames
+        shell: bash
+        run: |
+          python3 tools/make_v10_simple.py
+          python3 patches/v10_simple.py
+          echo "V10 png count: $(find assets/player_v10 -type f -name '*.png' | wc -l)"
+          grep -n 'player_v10_animations.json' scripts/game.gd
+          grep -n 'Android Test V10' scripts/game.gd
+          if grep -q '"STR"' scripts/game.gd || grep -q 'strong_attack' scripts/game.gd; then
+            echo 'Skill/STR code still present'
+            exit 92
+          fi
+
+      - name: Validate V10 sprite bounds
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          files=sorted(Path('assets/player_v10').glob('*/*.png'))
+          if len(files) != 26:
+              raise SystemExit(f'Expected 26 simple V10 PNG frames, got {len(files)}')
+          for p in files:
+              im=Image.open(p).convert('RGBA')
+              if im.size != (512,512):
+                  raise SystemExit(f'Bad canvas {p}: {im.size}')
+              b=im.getchannel('A').getbbox()
+              if not b:
+                  raise SystemExit(f'Empty frame {p}')
+              if b[3]-1 != 400:
+                  raise SystemExit(f'Foot baseline mismatch {p}: {b}')
+              if b[0] <= 8 or b[2] >= 504 or b[1] <= 8:
+                  raise SystemExit(f'Frame too close to canvas edge {p}: {b}')
+              if b[3]-b[1] > 112:
+                  raise SystemExit(f'Frame too tall {p}: {b}')
+          print('V10 sprite bounds OK:', len(files))
+          PY
 
       - name: Enable Android ETC2 ASTC texture import
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p = Path('project.godot')
-          s = p.read_text(encoding='utf-8')
-          key = 'textures/vram_compression/import_etc2_astc=true'
+          p=Path('project.godot')
+          s=p.read_text(encoding='utf-8')
+          key='textures/vram_compression/import_etc2_astc=true'
           if key not in s:
-              marker = '[rendering]\n'
+              marker='[rendering]\n'
               if marker not in s:
-                  raise SystemExit('Missing [rendering] section in project.godot')
-              s = s.replace(marker, marker + key + '\n', 1)
-              p.write_text(s, encoding='utf-8')
-          for line in p.read_text(encoding='utf-8').splitlines():
-              if 'vram_compression' in line:
-                  print(line)
+                  raise SystemExit('Missing [rendering] section')
+              s=s.replace(marker,marker+key+'\n',1)
+              p.write_text(s,encoding='utf-8')
+          print(key)
           PY
 
       - name: Install Godot templates and Android editor settings
@@ -108,14 +144,12 @@ jobs:
           set -e
           echo "===== runtime smoke exit code: $code ====="
           tail -n 320 build/runtime-smoke.log || true
-          echo "===== runtime error lines ====="
           grep -Ein 'SCRIPT ERROR|ERROR:|Invalid|Attempt to call|Nil|Null|Parser Error|Cannot|failed|not found' build/runtime-smoke.log | tail -n 260 || true
           if grep -Eiq 'SCRIPT ERROR|Parse Error|Failed to load script|Invalid call|Invalid get index|Attempt to call' build/runtime-smoke.log; then
             echo 'Fatal runtime/script error detected by smoke test.'
             exit 91
           fi
           if [ "$code" -ne 0 ] && [ "$code" -ne 124 ]; then
-            echo "Unexpected Godot runtime exit code $code"
             exit "$code"
           fi
 
@@ -124,24 +158,23 @@ jobs:
         run: |
           mkdir -p build
           set +e
-          godot --headless --verbose --path "$GITHUB_WORKSPACE" --export-debug "Android" "$GITHUB_WORKSPACE/build/HonbugiV9-Character-Test.apk" > build/android-export.log 2>&1
+          godot --headless --verbose --path "$GITHUB_WORKSPACE" --export-debug "Android" "$GITHUB_WORKSPACE/build/HonbugiV10-Simple.apk" > build/android-export.log 2>&1
           code=$?
           set -e
           echo "===== Godot Android export exit code: $code ====="
           tail -n 240 build/android-export.log || true
-          echo "===== likely error lines ====="
           grep -Ein 'error|failed|failure|missing|invalid|keystore|android|sdk|template|gradle|jarsigner|apksigner|etc2|astc' build/android-export.log | tail -n 180 || true
           if [ "$code" -ne 0 ]; then
             exit "$code"
           fi
-          test -s build/HonbugiV9-Character-Test.apk
-          sha256sum build/HonbugiV9-Character-Test.apk | tee build/HonbugiV9-Character-Test.apk.sha256
+          test -s build/HonbugiV10-Simple.apk
+          sha256sum build/HonbugiV10-Simple.apk | tee build/HonbugiV10-Simple.apk.sha256
 
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: HonbugiV9-Diagnostics
+          name: HonbugiV10-Diagnostics
           path: |
             build/runtime-smoke.log
             build/android-export.log
@@ -151,8 +184,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: HonbugiV9-Character-Test-Android
+          name: HonbugiV10-Simple-Android
           path: |
-            build/HonbugiV9-Character-Test.apk
-            build/HonbugiV9-Character-Test.apk.sha256
+            build/HonbugiV10-Simple.apk
+            build/HonbugiV10-Simple.apk.sha256
           if-no-files-found: error
